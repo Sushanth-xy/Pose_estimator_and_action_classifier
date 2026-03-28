@@ -13,7 +13,7 @@
 .vignette {
   position: absolute;
   inset: 0;
-  background: radial-gradient(ellipse 70% 60% at 50% 50%, transparent 30%, rgba(10,10,30,0.7) 100%);
+  background: radial-gradient(ellipse 80% 70% at 50% 40%, transparent 30%, rgba(0,0,0,0.5) 100%);
   pointer-events: none;
   z-index: 1;
 }
@@ -49,6 +49,7 @@
   border-radius: 50%;
   box-shadow: 0 0 8px var(--blue);
   animation: pulse 2s infinite;
+  flex-shrink: 0;
 }
 
 @keyframes pulse {

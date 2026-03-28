@@ -238,14 +238,14 @@
   letter-spacing: 0.08em;
 }
 
-/* ── Sidebar ── */
+/* ── Sidebar / Alert panel ── */
 .sidebar {
-  width: 280px;
+  width: 300px;
   flex-shrink: 0;
   border-left: 1px solid var(--border);
   display: flex;
   flex-direction: column;
-  background: rgba(10,10,20,0.6);
+  background: #050510;
 }
 
 .sidebarHeader {
@@ -257,74 +257,57 @@
 }
 
 .sidebarTitle {
-  font-family: var(--pixel);
-  font-size: 0.45rem;
+  font-size: 0.6rem;
+  font-weight: 700;
   color: var(--muted);
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+}
+
+.alertList {
+  flex: 1;
+  overflow-y: auto;
+  padding: 0.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.noAlerts {
+  color: var(--muted);
+  font-size: 0.75rem;
+  text-align: center;
+  padding: 2rem 1rem;
+  font-family: monospace;
+}
+
+.alertItem {
+  background: rgba(255,255,255,0.03);
+  border: 1px solid var(--border);
+  border-left: 3px solid #7c3aed;
+  border-radius: 6px;
+  padding: 0.6rem 0.75rem;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.alertSeverity {
+  font-size: 0.55rem;
+  font-weight: 700;
   letter-spacing: 0.15em;
 }
 
-.sidebarClose {
-  background: none;
-  border: 1px solid var(--border);
+.alertMsg {
+  font-size: 0.78rem;
+  color: var(--text);
+  line-height: 1.4;
+}
+
+.alertTime {
+  font-size: 0.65rem;
   color: var(--muted);
-  width: 24px;
-  height: 24px;
-  cursor: pointer;
-  font-size: 0.7rem;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  transition: border-color 0.2s, color 0.2s;
-}
-.sidebarClose:hover { border-color: var(--accent); color: var(--accent); }
-
-.modelPlaceholder {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-  position: relative;
-}
-
-.skeletonWrap {
-  width: 120px;
-  height: 200px;
-  animation: sway 3s ease-in-out infinite;
-}
-
-@keyframes sway {
-  0%,100% { transform: rotate(-2deg); }
-  50% { transform: rotate(2deg); }
-}
-
-.skeleton { width: 100%; height: 100%; }
-
-.modelNote {
-  font-size: 0.72rem;
-  color: var(--muted);
-  text-align: center;
-}
-
-.wsStatus {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-family: var(--pixel);
-  font-size: 0.4rem;
-  color: var(--muted);
-}
-
-.wsLive {
-  width: 6px; height: 6px;
-  border-radius: 50%;
-  background: #39ff14;
-  box-shadow: 0 0 6px #39ff14;
-}
-
-.wsDemo {
-  width: 6px; height: 6px;
-  border-radius: 50%;
-  background: #facc15;
+  font-family: monospace;
 }
 
 .recBtn {

@@ -1,241 +1,206 @@
-import { useRef, useEffect, useState, Suspense, Component } from 'react'
-import { Canvas, useFrame } from '@react-three/fiber'
-import { useGLTF, OrbitControls } from '@react-three/drei'
+import { useRef, useEffect, useState } from 'react'
 import * as THREE from 'three'
+import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
+import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
+import { PoseLandmarker, FilesetResolver } from '@mediapipe/tasks-vision'
+import { Pose } from 'kalidokit'
 
-// ─── Angle Calculator ────────────────────────────────────────────────────────
-// Computes the angle at point B given three 2D points A, B, C
-// Returns degrees in [0, 180]
-export function calculateAngle(A, B, C) {
-  const BAx = A[0] - B[0]
-  const BAy = A[1] - B[1]
-  const BCx = C[0] - B[0]
-  const BCy = C[1] - B[1]
-  const dot = BAx * BCx + BAy * BCy
-  const magBA = Math.sqrt(BAx * BAx + BAy * BAy)
-  const magBC = Math.sqrt(BCx * BCx + BCy * BCy)
-  const denom = magBA * magBC
-  if (denom < 1e-8) return 180 // coincident points → treat as straight
-  const cosAngle = Math.max(-1, Math.min(1, dot / denom))
-  return Math.acos(cosAngle) * (180 / Math.PI)
+function rigRotation(bone, rotation = { x: 0, y: 0, z: 0 }, dampener = 1, lerpAmount = 0.3) {
+  if (!bone || !rotation) return
+  bone.quaternion.slerp(
+    new THREE.Quaternion().setFromEuler(
+      new THREE.Euler(rotation.x * dampener, rotation.y * dampener, rotation.z * dampener, 'XYZ')
+    ), lerpAmount
+  )
 }
 
-// ─── Coordinate Normalization ─────────────────────────────────────────────────
-// Maps pixel coords [0,640] → [0,1], mirrors x, inverts y for Three.js
-export function normalizeKeypoints(keypoints) {
-  return keypoints.map(([px, py]) => [
-    1 - px / 640, // mirror x
-    1 - py / 640, // invert y (COCO top=0, Three.js up=positive)
-  ])
-}
-
-// ─── Bone Mapping Table ───────────────────────────────────────────────────────
-// Each entry: [boneName, proximalIdx, middleIdx, distalIdx, axis]
-const BONE_MAP = [
-  ['mixamorigLeftArm',      11, 5,  7,  'z'],
-  ['mixamorigLeftForeArm',   5, 7,  9,  'z'],
-  ['mixamorigRightArm',     12, 6,  8,  'z'],
-  ['mixamorigRightForeArm',  6, 8, 10,  'z'],
-  ['mixamorigLeftUpLeg',     5, 11, 13, 'x'],
-  ['mixamorigLeftLeg',      11, 13, 15, 'x'],
-  ['mixamorigRightUpLeg',    6, 12, 14, 'x'],
-  ['mixamorigRightLeg',     12, 14, 16, 'x'],
-]
-
-const _tmpEuler = new THREE.Euler()
-const _tmpQuat  = new THREE.Quaternion()
-
-// Applies COCO keypoints to Mixamo bones with lerp smoothing
-export function applyPose(bonesRef, keypoints, confidence, confidenceThreshold, smoothing) {
-  if (confidence < confidenceThreshold) return
-  const kp = normalizeKeypoints(keypoints)
-
-  for (const [boneName, pi, mi, di, axis] of BONE_MAP) {
-    const bone = bonesRef.current[boneName]
-    if (!bone) continue
-
-    const angleDeg = calculateAngle(kp[pi], kp[mi], kp[di])
-    const angleRad = (180 - angleDeg) * (Math.PI / 180)
-
-    _tmpEuler.set(
-      axis === 'x' ? angleRad : 0,
-      0,
-      axis === 'z' ? angleRad : 0
-    )
-    _tmpQuat.setFromEuler(_tmpEuler)
-    bone.quaternion.slerp(_tmpQuat, smoothing)
-  }
-}
-
-// ─── Demo Animator ────────────────────────────────────────────────────────────
-// Drives a looping squat animation using a sine wave when no WS is connected
-const _demoEuler = new THREE.Euler()
-const _demoQuat  = new THREE.Quaternion()
-
-export function applyDemo(bonesRef, elapsedTime) {
-  const squat = Math.sin(elapsedTime * 1.2) * 0.4 // ±0.4 rad ≈ ±23°
-
-  const demoBones = [
-    ['mixamorigLeftUpLeg',  'x',  squat],
-    ['mixamorigRightUpLeg', 'x',  squat],
-    ['mixamorigLeftLeg',    'x', -squat],
-    ['mixamorigRightLeg',   'x', -squat],
-  ]
-
-  for (const [boneName, axis, angle] of demoBones) {
-    const bone = bonesRef.current[boneName]
-    if (!bone) continue
-    _demoEuler.set(axis === 'x' ? angle : 0, 0, axis === 'z' ? angle : 0)
-    _demoQuat.setFromEuler(_demoEuler)
-    bone.quaternion.slerp(_demoQuat, 0.1)
-  }
-}
-
-// ─── useWebSocket Hook ────────────────────────────────────────────────────────
-function useWebSocket(url) {
-  const keypointsRef = useRef(null)
-  const [status, setStatus] = useState('connecting')
-  const wsRef      = useRef(null)
-  const timerRef   = useRef(null)
+export default function PoseAvatarMirror({ videoRef, modelPath = '/Idle.glb', width = '100%', height = '100%' }) {
+  const mountRef = useRef(null)
+  const [status, setStatus] = useState('Loading...')
 
   useEffect(() => {
-    function connect() {
-      setStatus('connecting')
-      const ws = new WebSocket(url)
-      wsRef.current = ws
+    const mount = mountRef.current
+    if (!mount) return
 
-      ws.onopen = () => setStatus('live')
+    let renderer, controls, rafId, detector, ro
+    let cancelled = false
+    let modelLoaded = false
+    const bones = {}
+    const clock = new THREE.Clock()
+    let lastLm = null
 
-      ws.onmessage = (evt) => {
+    // Delay init so DOM has painted and mount has real dimensions
+    const initTimer = setTimeout(() => {
+      const W = mount.offsetWidth  || 280
+      const H = mount.offsetHeight || 400
+
+      renderer = new THREE.WebGLRenderer({ antialias: true })
+      renderer.setPixelRatio(window.devicePixelRatio)
+      renderer.setClearColor(0x050510)
+      renderer.setSize(W, H)
+      mount.appendChild(renderer.domElement)
+
+      const scene  = new THREE.Scene()
+      scene.background = new THREE.Color(0x050510)
+
+      const camera = new THREE.PerspectiveCamera(50, W / H, 0.1, 100)
+      camera.position.set(0, 0, 3)
+      scene.add(new THREE.AmbientLight(0xffffff, 1.5))
+      const dir = new THREE.DirectionalLight(0xffffff, 2)
+      dir.position.set(2, 4, 2)
+      scene.add(dir)
+
+      controls = new OrbitControls(camera, renderer.domElement)
+      controls.enablePan = false
+      controls.target.set(0, 0, 0)
+
+      // Load GLB
+      new GLTFLoader().load(
+        modelPath,
+        (gltf) => {
+          gltf.scene.traverse(obj => {
+            // Grab bones from SkinnedMesh skeleton
+            if (obj.isSkinnedMesh && obj.skeleton) {
+              obj.skeleton.bones.forEach(b => { bones[b.name] = b })
+            }
+          })
+          console.log('Bones from skeleton:', Object.keys(bones))
+
+          // Auto-fit model in view
+          const box = new THREE.Box3().setFromObject(gltf.scene)
+          const center = box.getCenter(new THREE.Vector3())
+          const size = box.getSize(new THREE.Vector3())
+          const scale = 2 / Math.max(size.x, size.y, size.z)
+          gltf.scene.scale.setScalar(scale)
+          gltf.scene.position.sub(center.multiplyScalar(scale))
+
+          scene.add(gltf.scene)
+          modelLoaded = true
+          setStatus(Object.keys(bones).length > 0 ? 'Demo Mode' : 'No skeleton')
+        },
+        undefined,
+        (err) => { console.error('GLB error:', err); setStatus('GLB error') }
+      )
+
+      // MediaPipe
+      async function initMP() {
         try {
-          const data = JSON.parse(evt.data)
-          if (!Array.isArray(data.keypoints) || data.keypoints.length !== 17) {
-            console.warn('[PoseAvatarMirror] Invalid keypoints length, discarding frame')
-            return
+          const vision = await FilesetResolver.forVisionTasks(
+            'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm'
+          )
+          detector = await PoseLandmarker.createFromOptions(vision, {
+            baseOptions: { modelAssetPath: '/pose_landmarker_heavy.task', delegate: 'GPU' },
+            runningMode: 'VIDEO', numPoses: 1,
+          })
+        } catch (e) { console.warn('MediaPipe init failed:', e) }
+      }
+
+      function demoAnimate(t) {
+        const s = Math.sin(t * 1.2) * 0.4
+        // Try both naming conventions
+        const boneNames = [
+          ['mixamorigLeftUpLeg',  'mixamorigLeftUpLeg',  s],
+          ['mixamorigRightUpLeg', 'mixamorigRightUpLeg', s],
+          ['mixamorigLeftLeg',    'mixamorigLeftLeg',    -s],
+          ['mixamorigRightLeg',   'mixamorigRightLeg',   -s],
+          // Also try arm wave
+          ['mixamorigLeftArm',    'mixamorigLeftArm',    Math.sin(t * 0.8) * 0.3],
+          ['mixamorigRightArm',   'mixamorigRightArm',   -Math.sin(t * 0.8) * 0.3],
+        ]
+        for (const [name, , angle] of boneNames) {
+          const bone = bones[name]
+          if (bone) {
+            const q = new THREE.Quaternion().setFromEuler(new THREE.Euler(angle, 0, 0))
+            bone.quaternion.slerp(q, 0.1)
           }
-          keypointsRef.current = { keypoints: data.keypoints, confidence: data.confidence ?? 1 }
-        } catch {
-          console.warn('[PoseAvatarMirror] Invalid JSON message, discarding frame')
+        }
+        // Log bone names once
+        if (!window._boneNamesLogged && Object.keys(bones).length > 0) {
+          console.log('Available bones:', Object.keys(bones).filter(n => n.includes('mixamorig')))
+          window._boneNamesLogged = true
         }
       }
 
-      ws.onclose = () => {
-        setStatus('demo')
-        keypointsRef.current = null
-        timerRef.current = setTimeout(connect, 3000)
+      function rigFromLandmarks(lm) {
+        try {
+          const video = videoRef?.current
+          const kp = lm.map(p => ({ x: p.x, y: p.y, z: p.z ?? 0, visibility: p.visibility ?? 1 }))
+          const rig = Pose.solve(kp, kp, {
+            runtime: 'mediapipe',
+            video,
+            imageSize: { width: video?.videoWidth || 640, height: video?.videoHeight || 480 },
+            smoothLandmarks: true,
+          })
+          if (!rig) return
+          rigRotation(bones['mixamorigHips'],         rig.Hips?.rotation,  0.7)
+          rigRotation(bones['mixamorigSpine'],         rig.Spine,           0.7)
+          rigRotation(bones['mixamorigLeftArm'],       rig.LeftUpperArm,    1)
+          rigRotation(bones['mixamorigRightArm'],      rig.RightUpperArm,   1)
+          rigRotation(bones['mixamorigLeftForeArm'],   rig.LeftLowerArm,    1)
+          rigRotation(bones['mixamorigRightForeArm'],  rig.RightLowerArm,   1)
+          rigRotation(bones['mixamorigLeftUpLeg'],     rig.LeftUpperLeg,    1)
+          rigRotation(bones['mixamorigRightUpLeg'],    rig.RightUpperLeg,   1)
+          rigRotation(bones['mixamorigLeftLeg'],       rig.LeftLowerLeg,    1)
+          rigRotation(bones['mixamorigRightLeg'],      rig.RightLowerLeg,   1)
+        } catch (e) { console.warn('rig error:', e) }
       }
-    }
 
-    connect()
+      function animate() {
+        if (cancelled) return
+        rafId = requestAnimationFrame(animate)
+        const t = clock.getElapsedTime()
+        const video = videoRef?.current
+        if (detector && video && video.readyState >= 2) {
+          try {
+            const res = detector.detectForVideo(video, performance.now())
+            lastLm = res.landmarks?.[0] ?? null
+            setStatus(lastLm ? 'Live' : 'Demo Mode')
+          } catch {}
+        }
+        if (modelLoaded) {
+          if (lastLm) rigFromLandmarks(lastLm)
+          else demoAnimate(t)
+        }
+        controls.update()
+        renderer.render(scene, camera)
+      }
+
+      initMP().then(() => animate())
+
+      ro = new ResizeObserver(() => {
+        const w = mount.offsetWidth, h = mount.offsetHeight
+        if (w && h) {
+          renderer.setSize(w, h)
+          camera.aspect = w / h
+          camera.updateProjectionMatrix()
+        }
+      })
+      ro.observe(mount)
+    }, 100) // 100ms delay so DOM is painted
 
     return () => {
-      clearTimeout(timerRef.current)
-      wsRef.current?.close()
+      cancelled = true
+      clearTimeout(initTimer)
+      cancelAnimationFrame(rafId)
+      ro?.disconnect()
+      detector?.close()
+      if (renderer) {
+        renderer.dispose()
+        if (mount.contains(renderer.domElement)) mount.removeChild(renderer.domElement)
+      }
     }
-  }, [url])
-
-  return { keypointsRef, status }
-}
-
-// ─── AvatarScene ──────────────────────────────────────────────────────────────
-function AvatarScene({ modelPath, wsUrl, confidenceThreshold, smoothing, onStatusChange }) {
-  const { scene } = useGLTF(modelPath)
-  const bonesRef  = useRef({})
-  const { keypointsRef, status } = useWebSocket(wsUrl)
-
-  // Populate bone map once after GLB loads
-  useEffect(() => {
-    bonesRef.current = {}
-    scene.traverse((obj) => {
-      if (obj.isBone) bonesRef.current[obj.name] = obj
-    })
-  }, [scene])
-
-  // Notify parent of status changes for the overlay
-  useEffect(() => { onStatusChange(status) }, [status, onStatusChange])
-
-  useFrame((state) => {
-    if (status === 'live' && keypointsRef.current) {
-      const { keypoints, confidence } = keypointsRef.current
-      applyPose(bonesRef, keypoints, confidence, confidenceThreshold, smoothing)
-    } else {
-      applyDemo(bonesRef, state.clock.elapsedTime)
-    }
-  })
-
-  return (
-    <>
-      <ambientLight intensity={0.6} />
-      <directionalLight position={[2, 4, 2]} intensity={1} />
-      <primitive object={scene} position={[0, -1, 0]} />
-      <OrbitControls enablePan={false} />
-    </>
-  )
-}
-
-// ─── Status Overlay ───────────────────────────────────────────────────────────
-const STATUS_LABELS = { connecting: 'Connecting...', live: 'Live', demo: 'Demo Mode' }
-const STATUS_COLORS = { connecting: '#aaa', live: '#4ade80', demo: '#a855f7' }
-
-function StatusOverlay({ status }) {
-  return (
-    <div style={{
-      position: 'absolute', top: 12, left: 12,
-      background: 'rgba(0,0,0,0.55)', borderRadius: 6,
-      padding: '4px 10px', color: STATUS_COLORS[status],
-      fontFamily: 'monospace', fontSize: 13, pointerEvents: 'none',
-    }}>
-      {STATUS_LABELS[status] ?? status}
-    </div>
-  )
-}
-
-// ─── Error Boundary ───────────────────────────────────────────────────────────
-class ErrorBoundary extends Component {
-  state = { error: null }
-  static getDerivedStateFromError(e) { return { error: e } }
-  render() {
-    if (this.state.error) return (
-      <div style={{ color: 'red', padding: 16 }}>
-        Failed to load model: {this.state.error.message}
-      </div>
-    )
-    return this.props.children
-  }
-}
-
-// ─── PoseAvatarMirror (public API) ────────────────────────────────────────────
-export default function PoseAvatarMirror({
-  wsUrl              = 'ws://localhost:8765',
-  modelPath          = '/Idle.glb',
-  confidenceThreshold = 0.5,
-  smoothing          = 0.15,
-  width              = '100%',
-  height             = '100%',
-}) {
-  const [status, setStatus] = useState('connecting')
+  }, [modelPath, videoRef])
 
   return (
     <div style={{ position: 'relative', width, height }}>
-      <ErrorBoundary>
-        <Suspense fallback={
-          <div style={{ color: '#fff', padding: 16, fontFamily: 'monospace' }}>
-            Loading model...
-          </div>
-        }>
-          <Canvas camera={{ position: [0, 1, 3], fov: 50 }} style={{ width: '100%', height: '100%', background: 'transparent' }}>
-            <AvatarScene
-              modelPath={modelPath}
-              wsUrl={wsUrl}
-              confidenceThreshold={confidenceThreshold}
-              smoothing={smoothing}
-              onStatusChange={setStatus}
-            />
-          </Canvas>
-        </Suspense>
-      </ErrorBoundary>
-      <StatusOverlay status={status} />
+      <div ref={mountRef} style={{ width: '100%', height: '100%', minHeight: '400px' }} />
+      <div style={{
+        position: 'absolute', top: 8, left: 8,
+        background: 'rgba(0,0,0,0.7)', borderRadius: 6,
+        padding: '3px 8px', pointerEvents: 'none',
+        color: status === 'Live' ? '#4ade80' : '#a855f7',
+        fontFamily: 'monospace', fontSize: 11,
+      }}>{status}</div>
     </div>
   )
 }
-

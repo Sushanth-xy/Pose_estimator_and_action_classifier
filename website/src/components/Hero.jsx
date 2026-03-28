@@ -7,6 +7,7 @@ export default function Hero() {
 
       <div className={styles.content}>
         <div className={styles.badge}>
+          <span className={styles.dot} />
           SQUIRTLE — AI MONITORING SYSTEM
         </div>
 
