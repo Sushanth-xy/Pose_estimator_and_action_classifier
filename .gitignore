@@ -1,0 +1,50 @@
+# Jupyter notebook checkpoints
+.ipynb_checkpoints/
+*/.ipynb_checkpoints/
+
+# Jupyter config/runtime
+.jupyter/
+.jupyterlab-workspaces/
+.ipython/
+.local/share/jupyter/
+**/.ipynb_checkpoints/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+venv/
+.env/
+.venv/
+env/
+ENV/
+
+# Logs and temp files
+*.log
+*.tmp
+*.temp
+
+# OS-specific (macOS)
+.DS_Store
+
+# Large data/model files (optional but recommended)
+*.pt
+*.pth
+*.h5
+*.ckpt
+*.npz
+*.npy
+*.csv
+*.tsv
+*.zip
+*.tar
+*.tar.gz
+
+# Images and outputs (optional; comment out if you want them tracked)
+# *.png
+# *.jpg
+# *.jpeg
+# *.gif
+
