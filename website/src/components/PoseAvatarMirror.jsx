@@ -223,7 +223,7 @@ export default function PoseAvatarMirror({
             Loading model...
           </div>
         }>
-          <Canvas camera={{ position: [0, 1, 3], fov: 50 }} style={{ width: '100%', height: '100%' }}>
+          <Canvas camera={{ position: [0, 1, 3], fov: 50 }} style={{ width: '100%', height: '100%', background: 'transparent' }}>
             <AvatarScene
               modelPath={modelPath}
               wsUrl={wsUrl}
